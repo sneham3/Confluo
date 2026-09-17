@@ -1,0 +1,31 @@
+{
+  "name": "@confluo/adapters",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1134.0",
+    "@aws-sdk/s3-request-presigner": "3.1134.0",
+    "@confluo/shared": "workspace:*",
+    "@electric-sql/pglite": "0.5.8",
+    "drizzle-orm": "0.45.2",
+    "ioredis": "6.0.0",
+    "pg": "8.23.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.3",
+    "@types/pg": "8.23.1",
+    "typescript": "5.9.3",
+    "vitest": "5.0.1"
+  }
+}

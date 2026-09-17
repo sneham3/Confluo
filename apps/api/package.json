@@ -1,0 +1,38 @@
+{
+  "name": "@confluo/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@confluo/adapters": "workspace:*",
+    "@confluo/doc-render": "workspace:*",
+    "@confluo/shared": "workspace:*",
+    "@fastify/cookie": "11.1.2",
+    "@fastify/cors": "11.3.0",
+    "@fastify/helmet": "13.1.1",
+    "@fastify/rate-limit": "11.2.0",
+    "@node-rs/argon2": "2.2.1",
+    "drizzle-orm": "0.45.2",
+    "fastify": "5.12.5",
+    "fastify-type-provider-zod": "7.0.0",
+    "image-size": "2.0.4",
+    "jose": "6.2.12",
+    "pino": "10.3.1",
+    "yjs": "13.6.32",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.3",
+    "typescript": "5.9.3",
+    "vitest": "5.0.1"
+  }
+}

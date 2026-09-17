@@ -1,0 +1,33 @@
+{
+  "name": "confluo",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @confluo/server dev",
+    "dev:web": "pnpm --filter @confluo/web dev",
+    "dev:all": "concurrently -n server,web -c cyan,magenta \"pnpm --filter @confluo/server dev\" \"pnpm --filter @confluo/web dev\"",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "db:generate": "pnpm --filter @confluo/shared db:generate",
+    "db:seed": "pnpm --filter @confluo/server seed"
+  },
+  "devDependencies": {
+    "concurrently": "10.0.5",
+    "prettier": "3.9.7",
+    "turbo": "2.10.13",
+    "typescript": "5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "@node-rs/argon2",
+      "@electric-sql/pglite"
+    ]
+  }
+}
