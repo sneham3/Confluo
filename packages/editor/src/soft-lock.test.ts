@@ -100,6 +100,79 @@ describe('soft lock plugin', () => {
     expect(ySyncPluginKey.getState(editor.state)).toBeTruthy();
   });
 
+  it('Enter inside a paragraph held by someone else opens a new paragraph below it', () => {
+    const { editor, manager } = makeEditor();
+    const [a, b] = blockIds(editor) as [string, string];
+    manager.applyLockChanged({
+      blockId: a,
+      holder: { userId: 'other', clientId: 'c1', name: 'Other', color: '#f00', expiresAt: Date.now() + 30_000 },
+    });
+    editor.commands.setTextSelection(3); // caret inside the locked first paragraph
+    const handled = editor.view.someProp('handleKeyDown', (f) =>
+      f(editor.view, new KeyboardEvent('keydown', { key: 'Enter' })),
+    );
+    expect(handled).toBe(true);
+    // Locked paragraph untouched; a fresh, writable paragraph sits between the two.
+    expect(editor.state.doc.childCount).toBe(3);
+    expect(editor.state.doc.child(0).textContent).toBe('first');
+    expect(editor.state.doc.child(0).attrs.blockId).toBe(a);
+    expect(editor.state.doc.child(2).attrs.blockId).toBe(b);
+    const fresh = editor.state.doc.child(1);
+    expect(fresh.textContent).toBe('');
+    expect(fresh.attrs.blockId).not.toBe(a);
+    // Caret moved into the new paragraph, and typing there is allowed.
+    editor.commands.insertContent('mine');
+    expect(editor.state.doc.child(1).textContent).toBe('mine');
+    expect(editor.state.doc.child(0).textContent).toBe('first');
+  });
+
+  it('does not take over Enter in a paragraph nobody else holds', () => {
+    const { editor } = makeEditor();
+    editor.commands.setTextSelection(3);
+    const plugin = editor.state.plugins.find((p) => (p as unknown as { key: string }).key.startsWith('confluoSoftLock'));
+    const handled = plugin?.props.handleKeyDown?.call(plugin, editor.view, new KeyboardEvent('keydown', { key: 'Enter' }));
+    expect(handled).toBe(false);
+  });
+
+  it('claims nothing just because the document is open, and releases when idle', async () => {
+    vi.useFakeTimers();
+    try {
+      const acquire = vi.fn(async () => ({ granted: true, holder: null, expiresAt: Date.now() + 30_000 }));
+      const release = vi.fn(async () => undefined);
+      const manager = new LockManager({
+        userId: 'me',
+        canLock: () => true,
+        rpc: () => ({ acquire, release, heartbeat: async () => ({ renewed: [], lost: [] }) }),
+      });
+      // Opening a document (no focus, no activity) must not claim any block.
+      expect(manager.isActive()).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(acquire).not.toHaveBeenCalled();
+
+      // Activity + a selection inside a block → claim.
+      manager.markActivity();
+      manager.setSelectionBlocks(['blockAAAAAAA']);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(acquire).toHaveBeenCalledWith('blockAAAAAAA');
+      expect(manager.held.has('blockAAAAAAA')).toBe(true);
+
+      // Four idle seconds → released for everyone else.
+      await vi.advanceTimersByTimeAsync(4_100);
+      expect(release).toHaveBeenCalledWith('blockAAAAAAA');
+      expect(manager.held.size).toBe(0);
+      expect(manager.isActive()).toBe(false);
+
+      // Next keystroke re-takes it.
+      manager.markActivity();
+      manager.setSelectionBlocks(['blockAAAAAAA']);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(acquire).toHaveBeenCalledTimes(2);
+      manager.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('ignores our own locks and computes transaction blocks', () => {
     const { editor, manager } = makeEditor('me');
     const [a] = blockIds(editor) as [string, string];

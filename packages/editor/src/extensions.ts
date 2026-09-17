@@ -24,6 +24,8 @@ export interface CollabExtensionOptions {
 
 const SoftLockExtension = Extension.create<{ manager: LockManager | null }>({
   name: 'confluoSoftLock',
+  // Above the keymap extensions so the Enter escape hatch runs before the default split handler.
+  priority: 1000,
   addOptions() {
     return { manager: null };
   },

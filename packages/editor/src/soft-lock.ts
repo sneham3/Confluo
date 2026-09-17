@@ -1,10 +1,17 @@
-import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state';
+import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from '@tiptap/pm/state';
 import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { LOCK_HEARTBEAT_MS, LOCK_TTL_MS, type LockHolder } from '@confluo/shared';
 
 export const softLockKey = new PluginKey<SoftLockPluginState>('confluoSoftLock');
+
+/**
+ * A lock follows *activity*, not caret position: it is released after this long without a local
+ * edit or caret move, and re-acquired (optimistically) on the next one. Without this, a user who
+ * merely has a document open holds its first paragraph forever and nobody else can type there.
+ */
+export const LOCK_IDLE_RELEASE_MS = 4_000;
 
 export interface SoftLockPluginState {
   decorations: DecorationSet;
@@ -40,6 +47,8 @@ export class LockManager {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private blurTimer: ReturnType<typeof setTimeout> | null = null;
   private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastActivityAt = 0;
   private view: EditorView | null = null;
   private destroyed = false;
   private readonly now: () => number;
@@ -67,6 +76,24 @@ export class LockManager {
 
   attachView(view: EditorView): void {
     this.view = view;
+  }
+
+  /** The local user typed, moved the caret or focused the editor: keep (or re-take) the claim. */
+  markActivity(): void {
+    if (this.destroyed) return;
+    this.lastActivityAt = this.now();
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      this.wanted = new Set();
+      void this.reconcile();
+    }, LOCK_IDLE_RELEASE_MS);
+    (this.idleTimer as { unref?: () => void }).unref?.();
+  }
+
+  /** True while the local user has been active recently enough to hold locks. */
+  isActive(): boolean {
+    return this.lastActivityAt > 0 && this.now() - this.lastActivityAt < LOCK_IDLE_RELEASE_MS;
   }
 
   isLockedByOther(blockId: string): boolean {
@@ -208,6 +235,11 @@ export class LockManager {
     this.held.clear();
     this.pending.clear();
     this.wanted = new Set();
+    this.lastActivityAt = 0;
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     this.publishAwareness();
     this.notify();
   }
@@ -320,6 +352,15 @@ export function softLockPlugin(manager: LockManager): Plugin<SoftLockPluginState
     state: {
       init: (_config, state) => ({ decorations: buildDecorations(state.doc, manager) }),
       apply: (tr, value, _old, newState) => {
+        // Local edits and caret moves count as activity; remote updates and our own bookkeeping do not.
+        if (
+          (tr.docChanged || tr.selectionSet) &&
+          !isRemoteTransaction(tr) &&
+          !tr.getMeta(softLockKey) &&
+          !tr.getMeta('confluoBlockId')
+        ) {
+          manager.markActivity();
+        }
         if (tr.getMeta(softLockKey) || tr.docChanged) return { decorations: buildDecorations(newState.doc, manager) };
         return value;
       },
@@ -339,19 +380,51 @@ export function softLockPlugin(manager: LockManager): Plugin<SoftLockPluginState
     },
     props: {
       decorations: (state) => softLockKey.getState(state)?.decorations ?? DecorationSet.empty,
+      /**
+       * Escape hatch: Enter inside a paragraph someone else holds starts a new paragraph *below*
+       * it instead of splitting it. The insertion sits on the block boundary, so it touches no
+       * locked block, and the user always has somewhere to write.
+       */
+      handleKeyDown: (view, event) => {
+        if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return false;
+        if (!view.editable) return false;
+        const { state } = view;
+        const { $from } = state.selection;
+        if ($from.depth < 1) return false;
+        const id = $from.node(1).attrs.blockId as string | undefined;
+        if (typeof id !== 'string' || !manager.isLockedByOther(id)) return false;
+        const paragraph = state.schema.nodes.paragraph?.createAndFill();
+        if (!paragraph) return false;
+        const after = $from.after(1);
+        const tr = state.tr.insert(after, paragraph);
+        tr.setSelection(TextSelection.create(tr.doc, after + 1)).scrollIntoView();
+        view.dispatch(tr);
+        return true;
+      },
     },
     view: (view) => {
       manager.attachView(view);
       const dom = view.dom as HTMLElement;
       const onBlur = () => manager.onBlur();
-      const onFocus = () => manager.onFocus();
+      const onFocus = () => {
+        manager.onFocus();
+        if (!view.editable) return;
+        manager.markActivity();
+        manager.setSelectionBlocks(selectionBlocks(view.state));
+      };
       dom.addEventListener('blur', onBlur);
       dom.addEventListener('focus', onFocus);
-      manager.setSelectionBlocks(selectionBlocks(view.state));
+      // Never claim a lock just because the document is open: only when the user is in the editor.
+      if (view.editable && view.hasFocus()) {
+        manager.markActivity();
+        manager.setSelectionBlocks(selectionBlocks(view.state));
+      }
       return {
         update: (v, prev) => {
           if (prev.selection.eq(v.state.selection) && prev.doc.eq(v.state.doc)) return;
           if (!v.editable) return;
+          // Remote edits also land here; only a focused, recently active user holds locks.
+          if (!v.hasFocus() || !manager.isActive()) return;
           manager.setSelectionBlocks(selectionBlocks(v.state));
         },
         destroy: () => {
