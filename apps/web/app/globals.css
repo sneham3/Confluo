@@ -78,6 +78,75 @@
   --radius-lg: 10px;
 }
 
+/* ---- Landing page palette: black canvas, indigo accent (scoped; the app keeps its own tokens) ---- */
+.landing-theme {
+  --paper: #000000;
+  --surface: #0b0b12;
+  --ink: #ffffff;
+  --muted: #a9acbf;
+  --line: #1f2030;
+  --line-strong: #383a50;
+  --accent: #4b5bff;
+  --accent-hover: #6673ff;
+  --accent-soft: #151a3f;
+  --on-accent: #ffffff;
+  --code-bg: #12131d;
+  --font-fraunces: var(--font-jost);
+  --font-inter: var(--font-jost);
+  color-scheme: dark;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-jost), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  position: relative; /* containing block for absolutely positioned descendants, so the clip below applies to them */
+  overflow-x: clip; /* the hero art bleeds past the edge on purpose; never let it scroll the page sideways */
+}
+html:has(.landing-theme) body {
+  background: #000000;
+}
+.landing-theme .confluo-editor {
+  color: var(--ink);
+}
+
+/* Scroll hint: a mouse outline with a drifting wheel, centred at the bottom of the hero */
+.scroll-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  width: 22px;
+  height: 36px;
+  transform: translateX(-50%);
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  border-radius: 12px;
+  display: block;
+}
+.scroll-hint__wheel {
+  position: absolute;
+  left: 50%;
+  top: 7px;
+  width: 3px;
+  height: 7px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: #fff;
+  animation: scrollHint 1.8s ease-in-out infinite;
+}
+@keyframes scrollHint {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  60% {
+    transform: translateY(10px);
+    opacity: 0.2;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scroll-hint__wheel {
+    animation: none;
+  }
+}
+
 html,
 body {
   height: 100%;
