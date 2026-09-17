@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ACTIONS, can, type Action } from './permissions.js';
-import { ROLES, type Role } from './roles.js';
+import { ACTIONS, can, type Action } from './permissions';
+import { ROLES, type Role } from './roles';
 
 // Expected matrix from common doc §9. 1 = allowed.
 const expected: Record<Action, Record<Role, 0 | 1>> = {

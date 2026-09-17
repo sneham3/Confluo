@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RoleSchema } from './roles.js';
+import { RoleSchema } from './roles';
 
 // ---- Common ----------------------------------------------------------------
 

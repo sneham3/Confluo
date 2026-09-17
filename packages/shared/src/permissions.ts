@@ -1,4 +1,4 @@
-import { isAtLeast, type Role } from './roles.js';
+import { isAtLeast, type Role } from './roles';
 
 export const ACTIONS = [
   'doc.read',

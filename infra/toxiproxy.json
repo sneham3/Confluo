@@ -1,0 +1,14 @@
+[
+  {
+    "name": "sync",
+    "listen": "0.0.0.0:4101",
+    "upstream": "host.docker.internal:4100",
+    "enabled": true
+  },
+  {
+    "name": "api",
+    "listen": "0.0.0.0:4001",
+    "upstream": "host.docker.internal:4000",
+    "enabled": true
+  }
+]

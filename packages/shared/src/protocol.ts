@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RoleSchema } from './roles.js';
+import { RoleSchema } from './roles';
 
 /** WebSocket message types (first varUint of every binary frame). Common doc §8.3 */
 export const MESSAGE_SYNC = 0;

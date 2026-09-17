@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generateHTML, generateJSON } from '@tiptap/html';
-import { createSchemaExtensions } from './index.js';
+import { createSchemaExtensions } from './index';
 
 const fixture = {
   type: 'doc',

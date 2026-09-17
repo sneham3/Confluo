@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, count, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNull, lt, or } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   AppError,
@@ -209,7 +209,4 @@ export function registerDocRoutes(app: FastifyInstance, deps: ApiDeps) {
       };
     },
   );
-
-  // keep `sql` referenced for readyz users; avoids unused import when tree-shaken
-  void sql;
 }

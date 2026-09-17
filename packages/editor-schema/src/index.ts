@@ -8,11 +8,11 @@ import Italic from '@tiptap/extension-italic';
 import HardBreak from '@tiptap/extension-hard-break';
 import { BulletList, ListItem, ListKeymap, OrderedList } from '@tiptap/extension-list';
 import { Dropcursor, Gapcursor } from '@tiptap/extensions';
-import { ConfluoImage } from './image.js';
-import { BlockId } from './block-id.js';
+import { ConfluoImage } from './image';
+import { BlockId } from './block-id';
 
-export { ConfluoImage, type ImageAttrs, type ImageStatus } from './image.js';
-export { BlockId, BLOCK_TYPES, blockIdPluginKey } from './block-id.js';
+export { ConfluoImage, type ImageAttrs, type ImageStatus } from './image';
+export { BlockId, BLOCK_TYPES, blockIdPluginKey } from './block-id';
 
 export const schemaVersion = 1;
 

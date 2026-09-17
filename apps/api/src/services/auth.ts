@@ -1,20 +1,23 @@
-import { Algorithm, hash, verify } from '@node-rs/argon2';
+import { hash, verify } from '@node-rs/argon2';
 import { and, count, eq, isNull } from 'drizzle-orm';
-import { SignJWT, importPKCS8, importSPKI, jwtVerify, type KeyLike } from 'jose';
+import { SignJWT, importPKCS8, importSPKI, jwtVerify } from 'jose';
 import { randomUUID } from 'node:crypto';
 import { AppError, pickColor } from '@confluo/shared';
 import { refreshTokens, users } from '@confluo/shared/db';
 import type { ApiDeps, AuthUser } from '../types.js';
 import { randomToken, sha256 } from '../lib/crypto.js';
 
-const ARGON_OPTS = { algorithm: Algorithm.Argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 };
+// algorithm 2 = Argon2id (const enum in @node-rs/argon2; numeric literal avoids the ambient enum import)
+const ARGON_OPTS = { algorithm: 2, memoryCost: 65536, timeCost: 3, parallelism: 1 };
+type PrivateKey = Awaited<ReturnType<typeof importPKCS8>>;
+type PublicKey = Awaited<ReturnType<typeof importSPKI>>;
 const ACCESS_TTL_SECONDS = 15 * 60;
 export const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const REFRESH_COOKIE = 'confluo_refresh';
 
 export class AuthService {
-  private privateKey!: KeyLike | CryptoKey | Uint8Array;
-  private publicKey!: KeyLike | CryptoKey | Uint8Array;
+  private privateKey!: PrivateKey;
+  private publicKey!: PublicKey;
   private dummyHash = '';
 
   constructor(private readonly deps: ApiDeps) {}
@@ -36,12 +39,12 @@ export class AuthService {
       .setJti(randomUUID())
       .setIssuedAt()
       .setExpirationTime(`${ACCESS_TTL_SECONDS}s`)
-      .sign(this.privateKey as KeyLike);
+      .sign(this.privateKey);
   }
 
   async verifyAccessToken(token: string): Promise<AuthUser | null> {
     try {
-      const { payload } = await jwtVerify(token, this.publicKey as KeyLike, { algorithms: ['ES256'] });
+      const { payload } = await jwtVerify(token, this.publicKey, { algorithms: ['ES256'] });
       if (!payload.sub) return null;
       return { id: payload.sub, name: typeof payload.name === 'string' ? payload.name : '' };
     } catch {
@@ -54,7 +57,8 @@ export class AuthService {
     const email = input.email.trim().toLowerCase();
     const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
     if (existing) throw new AppError('CONFLICT', 409, 'An account with this email already exists');
-    const [{ value: userCount }] = await db.select({ value: count() }).from(users);
+    const countRows = await db.select({ value: count() }).from(users);
+    const userCount = countRows[0]?.value ?? 0;
     const passwordHash = await this.hashPassword(input.password);
     const [row] = await db
       .insert(users)
@@ -77,7 +81,7 @@ export class AuthService {
   }
 
   /** Create a fresh refresh family and return the raw token. */
-  async issueRefresh(userId: string, userAgent?: string | null, familyId = randomUUID()) {
+  async issueRefresh(userId: string, userAgent?: string | null, familyId: string = randomUUID()) {
     const raw = randomToken(32);
     await this.deps.adapters.db.insert(refreshTokens).values({
       userId,
@@ -95,11 +99,18 @@ export class AuthService {
     const [tok] = await db.select().from(refreshTokens).where(eq(refreshTokens.tokenHash, sha256(raw))).limit(1);
     if (!tok) throw new AppError('UNAUTHENTICATED', 401, 'Invalid session');
     if (tok.revokedAt) {
-      await db
-        .update(refreshTokens)
-        .set({ revokedAt: new Date() })
-        .where(and(eq(refreshTokens.familyId, tok.familyId), isNull(refreshTokens.revokedAt)));
-      throw new AppError('UNAUTHENTICATED', 401, 'Session reuse detected; please log in again');
+      // Two tabs (or a dev double-mount) can legitimately race a refresh with the same cookie.
+      // Within a short grace window we treat that as benign and issue another token in the family;
+      // beyond it, presenting a rotated token is reuse and the whole family is revoked.
+      const graceMs = Number(process.env.REFRESH_REUSE_GRACE_MS ?? 10_000);
+      const sinceRotation = Date.now() - tok.revokedAt.getTime();
+      if (sinceRotation > graceMs) {
+        await db
+          .update(refreshTokens)
+          .set({ revokedAt: new Date() })
+          .where(and(eq(refreshTokens.familyId, tok.familyId), isNull(refreshTokens.revokedAt)));
+        throw new AppError('UNAUTHENTICATED', 401, 'Session reuse detected; please log in again');
+      }
     }
     if (tok.expiresAt.getTime() < Date.now()) throw new AppError('UNAUTHENTICATED', 401, 'Session expired');
     await db.update(refreshTokens).set({ revokedAt: new Date() }).where(eq(refreshTokens.id, tok.id));
