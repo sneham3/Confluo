@@ -1,4 +1,4 @@
-import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from '@tiptap/pm/state';
+import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state';
 import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
@@ -35,8 +35,10 @@ export interface LockManagerOptions {
 }
 
 /**
- * Client side of the soft-lock protocol (common doc §10). Tracks which blocks this user holds,
- * which are held by others, and enforces read-only-ness of foreign blocks via `filterTransaction`.
+ * Client side of the soft-lock protocol (common doc §10). Tracks which blocks this user holds and
+ * which are held by others. The lock is *soft*: it shows who is writing where and refuses only
+ * operations that would destroy a held block (see `transactionDamagedBlocks`). Typing together in
+ * the same paragraph is always allowed and merged by the CRDT.
  */
 export class LockManager {
   readonly held = new Set<string>();
@@ -325,6 +327,43 @@ export function transactionBlocks(tr: Transaction): Set<string> {
   return touched;
 }
 
+/**
+ * Blocks a local transaction would *damage*: any changed range that reaches outside a block's own
+ * content. That covers deleting the block, joining it with a neighbour, deletes spanning several
+ * blocks, and re-typing it (paragraph → heading/list), all of which replace the block's Yjs element
+ * and would swallow whatever its holder is typing at that moment.
+ *
+ * Edits *inside* a block's content (typing, deleting text, marks, splitting with Enter) are never
+ * damage: Yjs merges them character by character, so several people can write in one paragraph.
+ */
+export function transactionDamagedBlocks(tr: Transaction): Set<string> {
+  const damaged = new Set<string>();
+  tr.steps.forEach((step, i) => {
+    const doc = tr.docs[i];
+    if (!doc) return;
+    const ranges: Array<[number, number]> = [];
+    step.getMap().forEach((oldStart, oldEnd) => ranges.push([oldStart, oldEnd]));
+    if (ranges.length === 0) {
+      const s = step as unknown as { from?: number; to?: number; pos?: number };
+      if (typeof s.from === 'number' && typeof s.to === 'number') ranges.push([s.from, s.to]);
+      else if (typeof s.pos === 'number') ranges.push([s.pos, s.pos + 1]);
+    }
+    for (const [f, t] of ranges) {
+      const empty = f === t;
+      doc.forEach((node, offset) => {
+        const id = node.attrs.blockId;
+        if (typeof id !== 'string') return;
+        const end = offset + node.nodeSize;
+        const hit = empty ? f > offset && f < end : f < end && t > offset;
+        if (!hit) return;
+        const insideContent = !node.isLeaf && f >= offset + 1 && t <= end - 1;
+        if (!insideContent) damaged.add(id);
+      });
+    }
+  });
+  return damaged;
+}
+
 export function isRemoteTransaction(tr: Transaction): boolean {
   return !!tr.getMeta(ySyncPluginKey) || !!tr.getMeta('y-sync$');
 }
@@ -370,7 +409,9 @@ export function softLockPlugin(manager: LockManager): Plugin<SoftLockPluginState
       if (isRemoteTransaction(tr)) return true;
       if (tr.getMeta('confluoUpload') || tr.getMeta('confluoBlockId')) return true;
       if (manager.others.size === 0) return true;
-      for (const id of transactionBlocks(tr)) {
+      // Co-typing is always allowed (the CRDT merges it). Only operations that would destroy a
+      // paragraph someone else is actively writing in are refused.
+      for (const id of transactionDamagedBlocks(tr)) {
         if (manager.isLockedByOther(id)) {
           manager.notifyBlocked(id);
           return false;
@@ -380,27 +421,6 @@ export function softLockPlugin(manager: LockManager): Plugin<SoftLockPluginState
     },
     props: {
       decorations: (state) => softLockKey.getState(state)?.decorations ?? DecorationSet.empty,
-      /**
-       * Escape hatch: Enter inside a paragraph someone else holds starts a new paragraph *below*
-       * it instead of splitting it. The insertion sits on the block boundary, so it touches no
-       * locked block, and the user always has somewhere to write.
-       */
-      handleKeyDown: (view, event) => {
-        if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return false;
-        if (!view.editable) return false;
-        const { state } = view;
-        const { $from } = state.selection;
-        if ($from.depth < 1) return false;
-        const id = $from.node(1).attrs.blockId as string | undefined;
-        if (typeof id !== 'string' || !manager.isLockedByOther(id)) return false;
-        const paragraph = state.schema.nodes.paragraph?.createAndFill();
-        if (!paragraph) return false;
-        const after = $from.after(1);
-        const tr = state.tr.insert(after, paragraph);
-        tr.setSelection(TextSelection.create(tr.doc, after + 1)).scrollIntoView();
-        view.dispatch(tr);
-        return true;
-      },
     },
     view: (view) => {
       manager.attachView(view);

@@ -111,18 +111,49 @@ try {
   });
   check('remote caret with name is visible', !!caret, caret ? caret.join(',') : '');
 
-  // Soft lock: Alice's selection is in paragraph 1 → Bob sees it locked.
+  // Soft lock as presence: Alice is writing in paragraph 1 → Bob sees her name on it.
   await p1.click();
   const locked = await waitFor(async () => (await bob.page.locator('.confluo-editor > .is-locked').count()) > 0, 8000);
-  check('locked block rendered for the other user', !!locked);
+  check('paragraph shows who is writing in it', !!locked);
 
-  // Lock enforcement: Bob tries to type into the locked paragraph after the denial arrived.
-  await bob.page.locator('.confluo-editor > p').first().click();
-  await bob.page.waitForTimeout(1200);
-  await bob.page.keyboard.type('ZZZ');
-  await bob.page.waitForTimeout(800);
-  const leaked = (await editorText(alice.page)).includes('ZZZ') || (await editorText(bob.page)).includes('ZZZ');
-  check('edit into a locked block is rejected', !leaked);
+  // Co-editing: both type into the SAME paragraph at the SAME time. Nothing is blocked, nothing is lost.
+  const bobP1 = bob.page.locator('.confluo-editor > p').first();
+  await bobP1.click();
+  await bob.page.keyboard.press('Home');
+  await alice.page.keyboard.press('End');
+  await Promise.all([
+    alice.page.keyboard.type(` ALICE-${run}-together`, { delay: 35 }),
+    bob.page.keyboard.type(`BOB-${run}-together `, { delay: 35 }),
+  ]);
+  // Compare document text only: remote caret labels live inside the paragraph's DOM.
+  const paraText = (page) =>
+    page.evaluate(() => {
+      const p = document.querySelector('.confluo-editor > p')?.cloneNode(true);
+      if (!p) return '';
+      p.querySelectorAll('.collaboration-carets__caret, .collaboration-carets__label').forEach((n) => n.remove());
+      return p.textContent ?? '';
+    });
+  let lastTexts = ['', ''];
+  const both = await waitFor(async () => {
+    const [a, b] = [await paraText(alice.page), await paraText(bob.page)];
+    lastTexts = [a, b];
+    const ok = (t) => t.includes(`ALICE-${run}-together`) && t.includes(`BOB-${run}-together`);
+    return ok(a) && ok(b) && a === b ? a : false;
+  }, 10000);
+  check(
+    'both people type in the same paragraph at once; text converges with nothing lost',
+    !!both,
+    both ? '' : `alice sees: "${lastTexts[0].slice(-120)}" | bob sees: "${lastTexts[1].slice(0, 120)}"`,
+  );
+
+  // Destructive guard: while Alice is writing there, Bob cannot restyle (replace) her paragraph.
+  await alice.page.keyboard.type('.');
+  await bob.page.waitForTimeout(700);
+  await bobP1.click();
+  await bob.page.keyboard.press('Control+Alt+1');
+  await bob.page.waitForTimeout(900);
+  const restyled = (await bob.page.locator('.confluo-editor > h1').count()) + (await alice.page.locator('.confluo-editor > h1').count());
+  check('restyling a paragraph someone is writing in is refused', restyled === 0);
 
   await alice.page.screenshot({ path: `${OUT}/editor-alice.png` });
   await bob.page.screenshot({ path: `${OUT}/editor-bob.png` });

@@ -5,7 +5,7 @@ import { Awareness } from 'y-protocols/awareness';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { CONTENT_FIELD } from '@confluo/shared';
 import { createCollabEditorExtensions } from './extensions';
-import { LockManager, blocksInRange, transactionBlocks } from './soft-lock';
+import { LockManager, blocksInRange, transactionBlocks, transactionDamagedBlocks } from './soft-lock';
 
 function makeEditor(userId = 'me', onBlocked = vi.fn()) {
   const ydoc = new Y.Doc();
@@ -47,26 +47,75 @@ describe('soft lock plugin', () => {
     expect(blocksInRange(doc, 2, doc.content.size - 1)).toEqual(ids);
   });
 
-  it('blocks local edits inside a block held by someone else, allows others', () => {
+  it('lets everyone type inside a block held by someone else (co-editing)', () => {
+    const { editor, manager, onBlocked } = makeEditor();
+    const [a] = blockIds(editor) as [string, string];
+    manager.applyLockChanged({
+      blockId: a,
+      holder: { userId: 'other', clientId: 'c1', name: 'Other', color: '#f00', expiresAt: Date.now() + 30_000 },
+    });
+    // Typing, deleting text and marks inside the held paragraph all go through.
+    editor.chain().setTextSelection(1).insertContent('X').run();
+    expect(editor.state.doc.child(0).textContent).toBe('Xfirst');
+    editor.chain().setTextSelection({ from: 1, to: 2 }).deleteSelection().run();
+    expect(editor.state.doc.child(0).textContent).toBe('first');
+    editor.chain().setTextSelection({ from: 1, to: 6 }).toggleBold().run();
+    expect(editor.state.doc.child(0).firstChild?.marks.some((m) => m.type.name === 'bold')).toBe(true);
+    // Enter splits it normally; the holder's element survives with its id.
+    editor.chain().setTextSelection(3).splitBlock().run();
+    expect(editor.state.doc.childCount).toBe(3);
+    expect(editor.state.doc.child(0).attrs.blockId).toBe(a);
+    expect(editor.state.doc.child(0).textContent + editor.state.doc.child(1).textContent).toBe('first');
+    expect(onBlocked).not.toHaveBeenCalled();
+  });
+
+  it('refuses only operations that would destroy a block someone else is writing in', () => {
     const { editor, manager, onBlocked } = makeEditor();
     const [a, b] = blockIds(editor) as [string, string];
     manager.applyLockChanged({
       blockId: a,
       holder: { userId: 'other', clientId: 'c1', name: 'Other', color: '#f00', expiresAt: Date.now() + 30_000 },
     });
-    // Edit inside first block → dropped by filterTransaction (commands still report true)
     const secondBlockPos = editor.state.doc.child(0).nodeSize + 1;
-    editor.chain().setTextSelection(1).insertContent("X").run();
-    expect(onBlocked).toHaveBeenCalled();
-    expect(editor.state.doc.child(0).textContent).toBe('first');
-    // Edit inside second block → allowed
-    editor.chain().setTextSelection(secondBlockPos).insertContent("Y").run();
-    expect(editor.state.doc.child(1).textContent).toBe('Ysecond');
-    // Deleting across the boundary into the locked block → dropped
+
+    // Deleting across the boundary into the held block → refused.
     editor.chain().setTextSelection({ from: 3, to: secondBlockPos + 2 }).deleteSelection().run();
     expect(editor.state.doc.childCount).toBe(2);
     expect(editor.state.doc.child(0).textContent).toBe('first');
+    expect(editor.state.doc.child(1).textContent).toBe('second');
+    expect(onBlocked).toHaveBeenCalledTimes(1);
+
+    // Re-typing the held paragraph as a heading replaces its Yjs element → refused.
+    editor.chain().setTextSelection(2).toggleHeading({ level: 1 }).run();
+    expect(editor.state.doc.child(0).type.name).toBe('paragraph');
+
+    // Backspace at the start of the next block would join it into the held one → refused.
+    editor.chain().setTextSelection(secondBlockPos).joinBackward().run();
+    expect(editor.state.doc.childCount).toBe(2);
+
+    // Deleting the held block outright → refused.
+    editor.view.dispatch(editor.state.tr.delete(0, editor.state.doc.child(0).nodeSize));
+    expect(editor.state.doc.childCount).toBe(2);
+    expect(editor.state.doc.child(0).attrs.blockId).toBe(a);
+
+    // The free block is fully editable, including restyling.
+    editor.chain().setTextSelection(secondBlockPos).insertContent('Y').run();
+    expect(editor.state.doc.child(1).textContent).toBe('Ysecond');
+    editor.chain().setTextSelection(secondBlockPos).toggleHeading({ level: 2 }).run();
+    expect(editor.state.doc.child(1).type.name).toBe('heading');
     expect(editor.state.doc.child(1).attrs.blockId).toBe(b);
+  });
+
+  it('classifies damage: inside-content edits are safe, boundary-crossing edits are not', () => {
+    const { editor } = makeEditor();
+    const [a, b] = blockIds(editor) as [string, string];
+    const size = editor.state.doc.child(0).nodeSize;
+    expect([...transactionDamagedBlocks(editor.state.tr.insertText('Z', 2))]).toEqual([]);
+    expect([...transactionDamagedBlocks(editor.state.tr.delete(1, size - 1))]).toEqual([]); // all text, block kept
+    expect([...transactionDamagedBlocks(editor.state.tr.split(3))]).toEqual([]);
+    expect([...transactionDamagedBlocks(editor.state.tr.delete(0, size))]).toEqual([a]);
+    expect(new Set(transactionDamagedBlocks(editor.state.tr.delete(3, size + 3)))).toEqual(new Set([a, b]));
+    expect([...transactionDamagedBlocks(editor.state.tr.setNodeMarkup(0, editor.schema.nodes.heading, { level: 1, blockId: a }))]).toEqual([a]);
   });
 
   it('decorates locked blocks and clears when released', () => {
@@ -100,38 +149,50 @@ describe('soft lock plugin', () => {
     expect(ySyncPluginKey.getState(editor.state)).toBeTruthy();
   });
 
-  it('Enter inside a paragraph held by someone else opens a new paragraph below it', () => {
-    const { editor, manager } = makeEditor();
-    const [a, b] = blockIds(editor) as [string, string];
-    manager.applyLockChanged({
-      blockId: a,
-      holder: { userId: 'other', clientId: 'c1', name: 'Other', color: '#f00', expiresAt: Date.now() + 30_000 },
-    });
-    editor.commands.setTextSelection(3); // caret inside the locked first paragraph
-    const handled = editor.view.someProp('handleKeyDown', (f) =>
-      f(editor.view, new KeyboardEvent('keydown', { key: 'Enter' })),
-    );
-    expect(handled).toBe(true);
-    // Locked paragraph untouched; a fresh, writable paragraph sits between the two.
-    expect(editor.state.doc.childCount).toBe(3);
-    expect(editor.state.doc.child(0).textContent).toBe('first');
-    expect(editor.state.doc.child(0).attrs.blockId).toBe(a);
-    expect(editor.state.doc.child(2).attrs.blockId).toBe(b);
-    const fresh = editor.state.doc.child(1);
-    expect(fresh.textContent).toBe('');
-    expect(fresh.attrs.blockId).not.toBe(a);
-    // Caret moved into the new paragraph, and typing there is allowed.
-    editor.commands.insertContent('mine');
-    expect(editor.state.doc.child(1).textContent).toBe('mine');
-    expect(editor.state.doc.child(0).textContent).toBe('first');
-  });
+  it('two people typing in the same paragraph at once converge with nothing lost', () => {
+    const A = makeEditor('alice');
+    const B = makeEditor('bob');
+    // Same starting document on both sides.
+    Y.applyUpdate(B.ydoc, Y.encodeStateAsUpdate(A.ydoc));
+    Y.applyUpdate(A.ydoc, Y.encodeStateAsUpdate(B.ydoc));
+    const sync = () => {
+      Y.applyUpdate(B.ydoc, Y.encodeStateAsUpdate(A.ydoc, Y.encodeStateVector(B.ydoc)));
+      Y.applyUpdate(A.ydoc, Y.encodeStateAsUpdate(B.ydoc, Y.encodeStateVector(A.ydoc)));
+    };
+    sync();
+    const targetIndex = (e: Editor) => {
+      let idx = -1;
+      e.state.doc.forEach((n, _o, i) => {
+        if (idx < 0 && n.textContent.includes('first')) idx = i;
+      });
+      return idx;
+    };
+    const posIn = (e: Editor, atEnd: boolean) => {
+      let pos = 0;
+      const i = targetIndex(e);
+      e.state.doc.forEach((n, offset, index) => {
+        if (index === i) pos = atEnd ? offset + n.nodeSize - 1 : offset + 1;
+      });
+      return pos;
+    };
+    const id = A.editor.state.doc.child(targetIndex(A.editor)).attrs.blockId as string;
+    // Each side believes the other holds this paragraph: worst case for the lock.
+    A.manager.applyLockChanged({ blockId: id, holder: { userId: 'bob', clientId: 'cb', name: 'Bob', color: '#00f', expiresAt: Date.now() + 30_000 } });
+    B.manager.applyLockChanged({ blockId: id, holder: { userId: 'alice', clientId: 'ca', name: 'Alice', color: '#f00', expiresAt: Date.now() + 30_000 } });
 
-  it('does not take over Enter in a paragraph nobody else holds', () => {
-    const { editor } = makeEditor();
-    editor.commands.setTextSelection(3);
-    const plugin = editor.state.plugins.find((p) => (p as unknown as { key: string }).key.startsWith('confluoSoftLock'));
-    const handled = plugin?.props.handleKeyDown?.call(plugin, editor.view, new KeyboardEvent('keydown', { key: 'Enter' }));
-    expect(handled).toBe(false);
+    // Interleaved keystrokes with no sync in between (a slow network), then merge.
+    for (const ch of 'AAAA') A.editor.chain().setTextSelection(posIn(A.editor, false)).insertContent(ch).run();
+    for (const ch of 'BBBB') B.editor.chain().setTextSelection(posIn(B.editor, true)).insertContent(ch).run();
+    sync();
+
+    const textA = A.editor.state.doc.child(targetIndex(A.editor)).textContent;
+    const textB = B.editor.state.doc.child(targetIndex(B.editor)).textContent;
+    expect(textA).toBe(textB);
+    expect(textA).toContain('first');
+    expect(textA.match(/A/g)?.length).toBe(4);
+    expect(textA.match(/B/g)?.length).toBe(4);
+    expect(A.onBlocked).not.toHaveBeenCalled();
+    expect(B.onBlocked).not.toHaveBeenCalled();
   });
 
   it('claims nothing just because the document is open, and releases when idle', async () => {

@@ -28,6 +28,9 @@
       "esbuild",
       "@node-rs/argon2",
       "@electric-sql/pglite"
-    ]
+    ],
+    "overrides": {
+      "@tiptap/y-tiptap": "3.0.5"
+    }
   }
 }

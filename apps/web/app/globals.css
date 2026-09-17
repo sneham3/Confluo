@@ -197,7 +197,6 @@ h3 {
   border-left-color: var(--lock-color, var(--muted));
   background: color-mix(in srgb, var(--lock-color, var(--muted)) 6%, transparent);
   border-radius: 0 4px 4px 0;
-  cursor: not-allowed;
 }
 .confluo-editor > .is-locked::after {
   content: attr(data-lock-name);

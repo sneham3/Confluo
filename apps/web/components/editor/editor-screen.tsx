@@ -83,7 +83,10 @@ export function EditorScreen({ detail }: { detail: DocDetailResponse }) {
             title: { value: detail.doc.title, version: detail.doc.version },
             onEvent,
             onBlocked: (holder: { name: string }) => {
-              toast.warning(`Paragraph is being edited by ${holder.name}`, { id: 'lock-blocked', duration: 1800 });
+              toast.warning(`${holder.name} is writing in that paragraph, so it can't be deleted, merged or restyled right now`, {
+                id: 'lock-blocked',
+                duration: 2600,
+              });
               shakeLocked();
             },
             onTitleAdopted: (d: { title: string }) => toast.info(`Renamed elsewhere to “${d.title}”`),

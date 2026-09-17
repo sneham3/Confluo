@@ -10,6 +10,7 @@ export {
   softLockKey,
   selectionBlocks,
   transactionBlocks,
+  transactionDamagedBlocks,
   blocksInRange,
   isRemoteTransaction,
   type LockManagerOptions,
